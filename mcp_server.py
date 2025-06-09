@@ -1,7 +1,6 @@
 """
-Mathematica Model Context Protocol (MCP) Server
-Allows Claude to execute Mathematica commands with session management,
-mathematical formatting, and comprehensive error handling.
+Mathematica Model Context Protocol (MCP) Server - Fixed Version
+Includes fixes for empty output issues in Claude Desktop environment
 """
 
 import asyncio
@@ -26,8 +25,6 @@ except ImportError:
     exit(1)
 
 # Configure logging to stderr (as required by MCP)
-import sys
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -191,6 +188,7 @@ class MathematicaFormatter:
                 "wolframscript",
                 "-code",
                 tex_code,
+                "-print",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -219,7 +217,7 @@ class MathematicaFormatter:
             return None
 
     @staticmethod
-    def format_result(result: str, latex: Optional[str] = False) -> str:
+    def format_result(result: str, latex: Optional[str] = None) -> str:
         """Format the result for display, optionally including LaTeX."""
         formatted = f"**Result:**\n{result}"
 
@@ -259,7 +257,7 @@ class MathematicaMCPServer:
         # Add server info to help Claude understand capabilities
         self.server.server_info = {
             "name": "Mathematica MCP Server",
-            "version": "1.0.0",
+            "version": "1.0.1",
             "description": "Advanced mathematical computation server powered by Wolfram Mathematica. Provides symbolic mathematics, calculus, algebra, statistics, plotting, and numerical analysis capabilities. Use for any mathematical task that goes beyond basic arithmetic.",
             "capabilities": [
                 "Symbolic mathematics and equation solving",
@@ -285,121 +283,62 @@ class MathematicaMCPServer:
             return True, None
 
         try:
-            # First check if wolframscript exists - use shorter timeout
-            which_process = await asyncio.create_subprocess_exec(
-                "which",
-                "wolframscript",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                which_stdout, which_stderr = await asyncio.wait_for(
-                    which_process.communicate(), timeout=5
-                )
-            except asyncio.TimeoutError:
-                logger.warning("'which wolframscript' timed out, assuming available")
-                self._wolframscript_checked = True
-                return True, None
+            # Log environment for debugging
+            logger.info(f"Current environment variables: {dict(os.environ)}")
+            logger.info(f"Current working directory: {os.getcwd()}")
 
-            if which_process.returncode != 0:
-                logger.error(
-                    f"wolframscript not found in PATH: {which_stderr.decode('utf-8')}"
-                )
-                return False, "wolframscript not found in PATH"
-
-            wolfram_path = which_stdout.decode("utf-8").strip()
-            logger.info(f"Found wolframscript at: {wolfram_path}")
-
-            # Then check version with shorter timeout
-            process = await asyncio.create_subprocess_exec(
-                "wolframscript",
-                "-version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy(),
-            )
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=5
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "wolframscript version check timed out, assuming available"
-                )
-                process.kill()
-                await process.wait()
-                self._wolframscript_checked = True
-                return True, None
-
-            if process.returncode != 0:
-                error_msg = f"wolframscript returned error code {process.returncode}"
-                if stderr:
-                    error_msg += f": {stderr.decode('utf-8', errors='ignore')}"
-                logger.warning(f"{error_msg}, but continuing anyway")
-                self._wolframscript_checked = True
-                return True, None
-
-            version_info = stdout.decode("utf-8").strip()
-            logger.info(f"wolframscript version: {version_info}")
-
-            # Test basic execution with shorter timeout and more lenient handling
+            # Test basic execution with explicit print
             test_process = await asyncio.create_subprocess_exec(
                 "wolframscript",
                 "-code",
-                "2+2",
+                'Print["MCP_TEST_OK"]',
+                "-print",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy(),
             )
+
             try:
                 test_stdout, test_stderr = await asyncio.wait_for(
-                    test_process.communicate(), timeout=5
+                    test_process.communicate(), timeout=10
                 )
             except asyncio.TimeoutError:
-                logger.warning("wolframscript test execution timed out, but continuing")
+                logger.error("wolframscript test timed out")
                 test_process.kill()
                 await test_process.wait()
-                self._wolframscript_checked = True
-                return True, None
+                return False, "wolframscript test timed out"
+
+            stdout_str = test_stdout.decode("utf-8").strip()
+            stderr_str = test_stderr.decode("utf-8").strip()
+
+            logger.info(f"Test stdout: '{stdout_str}'")
+            logger.info(f"Test stderr: '{stderr_str}'")
+            logger.info(f"Test return code: {test_process.returncode}")
 
             if test_process.returncode != 0:
-                error_msg = f"wolframscript test execution failed: {test_stderr.decode('utf-8')}"
-                logger.warning(f"{error_msg}, but continuing anyway")
-                self._wolframscript_checked = True
-                return True, None
-
-            test_result = test_stdout.decode("utf-8").strip()
-            if test_result != "4":
-                logger.warning(
-                    f"wolframscript test gave unexpected result: '{test_result}' (expected '4'), but continuing"
+                return (
+                    False,
+                    f"wolframscript test failed with code {test_process.returncode}",
                 )
-                self._wolframscript_checked = True
-                return True, None
+
+            if "MCP_TEST_OK" not in stdout_str:
+                logger.warning(f"Expected 'MCP_TEST_OK' in output, got: '{stdout_str}'")
+                # Don't fail, just warn
 
             self._wolframscript_checked = True
-            logger.info("wolframscript availability and functionality confirmed")
+            logger.info("wolframscript check passed")
             return True, None
 
         except FileNotFoundError:
-            logger.warning("wolframscript not found, but continuing anyway")
-            self._wolframscript_checked = True
-            return True, None
-        except asyncio.TimeoutError:
-            logger.warning("wolframscript version check timed out, but continuing")
-            self._wolframscript_checked = True
-            return True, None
+            return False, "wolframscript not found in PATH"
         except Exception as e:
-            logger.warning(f"Error checking wolframscript: {e}, but continuing")
-            self._wolframscript_checked = True
-            return True, None
+            logger.error(f"Error checking wolframscript: {e}")
+            return False, f"Error checking wolframscript: {str(e)}"
 
     def setup_tools(self):
         """Set up the available tools for the MCP server."""
 
         @self.server.list_tools()
         async def list_tools():
-            # Don't check wolframscript during tool listing to avoid hanging
-            # The check will happen when tools are actually called
             return [
                 Tool(
                     name="mathematica_eval",
@@ -414,100 +353,15 @@ class MathematicaMCPServer:
                             "format_latex": {
                                 "type": "boolean",
                                 "description": "Whether to include LaTeX formatting of mathematical results for better display",
-                                "default": False,
+                                "default": True,
                             },
                         },
                         "required": ["code"],
                     },
                 ),
                 Tool(
-                    name="solve_equation",
-                    description="Solve algebraic equations, systems of equations, differential equations, or inequalities using Mathematica's powerful solving capabilities. Use this when users ask to solve equations, find roots, or solve mathematical systems.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "equation": {
-                                "type": "string",
-                                "description": "The equation or system to solve (e.g., 'x^2 + 2*x + 1 == 0', '{x + y == 5, x - y == 1}', 'y'' + y == 0')",
-                            },
-                            "variables": {
-                                "type": "string",
-                                "description": "Variables to solve for (e.g., 'x', '{x, y}', or leave empty for auto-detection)",
-                            },
-                        },
-                        "required": ["equation"],
-                    },
-                ),
-                Tool(
-                    name="calculate_calculus",
-                    description="Perform calculus operations like derivatives, integrals, limits, and series expansions using Mathematica. Use this for any calculus-related mathematical questions.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "operation": {
-                                "type": "string",
-                                "enum": ["derivative", "integral", "limit", "series"],
-                                "description": "The calculus operation to perform",
-                            },
-                            "expression": {
-                                "type": "string",
-                                "description": "The mathematical expression to operate on",
-                            },
-                            "variable": {
-                                "type": "string",
-                                "description": "The variable with respect to which to perform the operation (e.g., 'x')",
-                            },
-                            "bounds": {
-                                "type": "string",
-                                "description": "For integrals: bounds like '{x, 0, 1}'; for limits: point like 'x -> 0'; for series: point and order like '{x, 0, 5}'",
-                            },
-                        },
-                        "required": ["operation", "expression", "variable"],
-                    },
-                ),
-                Tool(
-                    name="plot_mathematical_function",
-                    description="Create mathematical plots and visualizations using Mathematica's plotting capabilities. Use this when users want to visualize functions, data, or mathematical relationships.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "expression": {
-                                "type": "string",
-                                "description": "The mathematical expression or function to plot (e.g., 'Sin[x]', 'x^2 + 2*x')",
-                            },
-                            "variable_range": {
-                                "type": "string",
-                                "description": "Variable and range to plot over (e.g., '{x, -5, 5}', '{x, 0, 2*Pi}')",
-                            },
-                            "plot_type": {
-                                "type": "string",
-                                "enum": [
-                                    "Plot",
-                                    "Plot3D",
-                                    "ParametricPlot",
-                                    "PolarPlot",
-                                    "ContourPlot",
-                                    "ListPlot",
-                                ],
-                                "description": "Type of plot to create",
-                                "default": "Plot",
-                            },
-                        },
-                        "required": ["expression", "variable_range"],
-                    },
-                ),
-                Tool(
-                    name="mathematica_session_info",
-                    description="Get detailed information about the current Mathematica session including active variables, computation history, and session state. Use this when users want to see what variables are currently defined, review previous calculations, or understand the current mathematical context.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                ),
-                Tool(
-                    name="mathematica_clear_session",
-                    description="Clear the current Mathematica session, removing all defined variables and computation history. Use this when starting fresh calculations, when variable conflicts occur, or when users explicitly want to reset their mathematical workspace.",
+                    name="test_wolframscript",
+                    description="Test if wolframscript is working correctly. Use this for debugging MCP connection issues.",
                     inputSchema={
                         "type": "object",
                         "properties": {},
@@ -522,41 +376,82 @@ class MathematicaMCPServer:
 
             if name == "mathematica_eval":
                 return await self.execute_mathematica(
-                    arguments["code"], arguments.get("format_latex", False)
+                    arguments["code"], arguments.get("format_latex", True)
                 )
-            elif name == "solve_equation":
-                return await self.solve_equation(
-                    arguments["equation"], arguments.get("variables", "")
-                )
-            elif name == "calculate_calculus":
-                return await self.calculate_calculus(
-                    arguments["operation"],
-                    arguments["expression"],
-                    arguments["variable"],
-                    arguments.get("bounds", ""),
-                )
-            elif name == "plot_mathematical_function":
-                return await self.plot_function(
-                    arguments["expression"],
-                    arguments["variable_range"],
-                    arguments.get("plot_type", "Plot"),
-                )
-            elif name == "mathematica_session_info":
-                return await self.get_session_info()
-            elif name == "mathematica_clear_session":
-                return await self.clear_session()
+            elif name == "test_wolframscript":
+                return await self.test_wolframscript_direct()
             else:
                 logger.error(f"Unknown tool called: {name}")
                 return [
                     TextContent(type="text", text=f"**Error:** Unknown tool: {name}")
                 ]
 
+    async def test_wolframscript_direct(self) -> List[TextContent]:
+        """Direct test of wolframscript without any wrapping."""
+        try:
+            # Test 1: Basic execution
+            process = await asyncio.create_subprocess_exec(
+                "wolframscript",
+                "-code",
+                "2+2",
+                "-print",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+
+            result = f"Test 1 - Basic: stdout='{stdout.decode()}', stderr='{stderr.decode()}', code={process.returncode}\n"
+
+            # Test 2: With explicit Print
+            process2 = await asyncio.create_subprocess_exec(
+                "wolframscript",
+                "-code",
+                "Print[4]",
+                "-print",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout2, stderr2 = await process2.communicate()
+
+            result += f"Test 2 - Print: stdout='{stdout2.decode()}', stderr='{stderr2.decode()}', code={process2.returncode}\n"
+
+            # Test 3: Using MathKernel directly
+            kernel_path = "/Applications/Mathematica.app/Contents/MacOS/MathKernel"
+            if os.path.exists(kernel_path):
+                process3 = await asyncio.create_subprocess_exec(
+                    kernel_path,
+                    "-noprompt",
+                    "-run",
+                    "Print[6]; Exit[]",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout3, stderr3 = await process3.communicate()
+                result += f"Test 3 - MathKernel: stdout='{stdout3.decode()}', stderr='{stderr3.decode()}', code={process3.returncode}\n"
+            else:
+                result += f"Test 3 - MathKernel: Not found at {kernel_path}\n"
+
+            # Test 4: Environment info
+            result += f"\nEnvironment:\n"
+            result += f"PATH: {os.environ.get('PATH', 'NOT SET')}\n"
+            result += f"HOME: {os.environ.get('HOME', 'NOT SET')}\n"
+            result += f"CWD: {os.getcwd()}\n"
+
+            return [TextContent(type="text", text=result)]
+
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text", text=f"Test error: {str(e)}\n{traceback.format_exc()}"
+                )
+            ]
+
     async def execute_mathematica(
-        self, code: str, format_latex: bool = False
+        self, code: str, format_latex: bool = True
     ) -> List[TextContent]:
         """Execute Mathematica code with full error handling and formatting."""
         try:
-            # Check if wolframscript is available (this should now be more lenient)
+            # Check if wolframscript is available
             wolframscript_ok, error_msg = await self.check_wolframscript()
             if not wolframscript_ok:
                 return [TextContent(type="text", text=f"**System Error:** {error_msg}")]
@@ -570,18 +465,32 @@ class MathematicaMCPServer:
 
             # Prepare code with session context
             context = self.session.get_context_variables()
-            full_code = f"{context}\n{code}" if context else code
-            logger.info(f"Executing Mathematica code: {code[:100]}...")
 
-            # Log environment details
-            logger.info(f"Current working directory: {os.getcwd()}")
-            logger.info(f"PATH environment: {os.environ.get('PATH', '')[:200]}...")
+            # FIX: Wrap code to ensure output is captured
+            wrapped_code = f"""
+(* MCP Server Execution *)
+{context}
+result = {code};
+Print[OutputForm[result]];
+result
+"""
 
-            # Log the exact command being executed
-            cmd_args = ["wolframscript", "-code", full_code]
-            logger.info(f"Command args: {cmd_args}")
+            logger.info(f"Executing wrapped Mathematica code: {wrapped_code[:200]}...")
 
-            # Create environment with proper settings
+            # FIX: Use explicit options for better output control
+            cmd_args = [
+                "wolframscript",
+                "-code",
+                wrapped_code,
+                "-print",
+                "all",  # Print all outputs
+                "-format",
+                "OutputForm",  # Force text output
+                "-charset",
+                "UTF8",  # Ensure proper encoding
+            ]
+
+            # FIX: Ensure proper environment
             env = os.environ.copy()
             # Ensure Mathematica path is at the front
             mathematica_path = "/Applications/Mathematica.app/Contents/MacOS"
@@ -589,15 +498,20 @@ class MathematicaMCPServer:
             if mathematica_path not in current_path:
                 env["PATH"] = f"{mathematica_path}:{current_path}"
 
-            # Add some environment variables that might help with MCP context
-            env["WOLFRAM_CONTEXT"] = "mcp_server"
-            env["WOLFRAM_SCRIPT_MODE"] = "batch"
+            # Add critical environment variables if not present
+            if "HOME" not in env:
+                env["HOME"] = os.path.expanduser("~")
+            if "USER" not in env:
+                import pwd
+
+                env["USER"] = pwd.getpwuid(os.getuid()).pw_name
 
             process = await asyncio.create_subprocess_exec(
                 *cmd_args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
+                cwd=self.session.temp_dir,  # Use session temp dir as working directory
             )
 
             logger.info(f"Process created with PID: {process.pid}")
@@ -610,11 +524,15 @@ class MathematicaMCPServer:
                 logger.info(f"Raw stdout length: {len(stdout)} bytes")
                 logger.info(f"Raw stderr length: {len(stderr)} bytes")
 
-                # Log raw output for debugging
-                if len(stdout) < 500:  # Only log if not too long
-                    logger.info(f"Raw stdout bytes: {stdout}")
-                if len(stderr) < 500:
-                    logger.info(f"Raw stderr bytes: {stderr}")
+                # Log first 500 chars of output for debugging
+                if stdout:
+                    logger.info(
+                        f"Stdout preview: {stdout.decode('utf-8', errors='ignore')[:500]}"
+                    )
+                if stderr:
+                    logger.info(
+                        f"Stderr preview: {stderr.decode('utf-8', errors='ignore')[:500]}"
+                    )
 
             except asyncio.TimeoutError:
                 logger.error("Process timed out")
@@ -628,41 +546,54 @@ class MathematicaMCPServer:
                 ]
 
             if process.returncode == 0:
-                result = stdout.decode("utf-8").strip()
-                logger.info(f"Decoded Mathematica output: '{result}'")
+                result = stdout.decode("utf-8", errors="ignore").strip()
 
-                # Check for empty result and provide more helpful diagnostics
+                # FIX: If still empty, try alternative approach
                 if not result:
-                    logger.error("Empty result from wolframscript!")
-                    stderr_content = stderr.decode("utf-8")
-                    logger.error(f"Stderr content: '{stderr_content}'")
-                    logger.error(f"Code executed: '{full_code}'")
+                    logger.warning(
+                        "Empty result from wolframscript, trying alternative approach"
+                    )
 
-                    # Try to provide a helpful error message
-                    if "license" in stderr_content.lower():
-                        return [
-                            TextContent(
-                                type="text",
-                                text="**License Error:** Mathematica license issue detected. Please check your Mathematica installation and license.",
+                    # Try using a temporary file
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".m", delete=False
+                    ) as f:
+                        f.write(f"{context}\n{code}\n")
+                        temp_file = f.name
+
+                    try:
+                        alt_process = await asyncio.create_subprocess_exec(
+                            "wolframscript",
+                            "-file",
+                            temp_file,
+                            "-print",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=env,
+                            cwd=self.session.temp_dir,
+                        )
+                        alt_stdout, alt_stderr = await alt_process.communicate()
+                        result = alt_stdout.decode("utf-8", errors="ignore").strip()
+
+                        if not result:
+                            logger.error(
+                                f"Still empty. Alt stderr: {alt_stderr.decode('utf-8', errors='ignore')}"
                             )
-                        ]
-                    elif "kernel" in stderr_content.lower():
-                        return [
-                            TextContent(
-                                type="text",
-                                text="**Kernel Error:** Mathematica kernel issue. This may be due to environment differences in the MCP context.",
-                            )
-                        ]
-                    else:
-                        # Try a more direct approach - maybe the code is too complex for the environment
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"**Environment Error:** wolframscript returned empty output. This may be due to MCP environment limitations.\n"
-                                f"Code attempted: {code}\n"
-                                f"Try a simpler expression or check that Mathematica is properly installed.",
-                            )
-                        ]
+                    finally:
+                        os.unlink(temp_file)
+
+                if not result:
+                    # Provide diagnostic information
+                    stderr_content = stderr.decode("utf-8", errors="ignore")
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"**Error:** Empty output from wolframscript\n"
+                            f"Stderr: {stderr_content}\n"
+                            f"Working directory: {self.session.temp_dir}\n"
+                            f"Try using the test_wolframscript tool to diagnose the issue.",
+                        )
+                    ]
 
                 # Sanitize output
                 result = MathematicaValidator.sanitize_output(result)
@@ -690,110 +621,15 @@ class MathematicaMCPServer:
                 return [TextContent(type="text", text=formatted_output)]
 
             else:
-                error = stderr.decode("utf-8").strip()
+                error = stderr.decode("utf-8", errors="ignore").strip()
                 error = MathematicaValidator.sanitize_output(error)
 
                 return [TextContent(type="text", text=f"**Execution Error:**\n{error}")]
 
         except Exception as e:
             logger.error(f"Unexpected error in execute_mathematica: {e}")
-            import traceback
-
             logger.error(f"Traceback: {traceback.format_exc()}")
             return [TextContent(type="text", text=f"**System Error:** {str(e)}")]
-
-    async def solve_equation(
-        self, equation: str, variables: str = ""
-    ) -> List[TextContent]:
-        """Solve equations using Mathematica's Solve function."""
-        try:
-            # Auto-detect variables if not provided
-            if not variables.strip():
-                var_matches = re.findall(r"\b[a-zA-Z][a-zA-Z0-9]*\b", equation)
-                # Filter out common function names
-                excluded = {
-                    "Sin",
-                    "Cos",
-                    "Tan",
-                    "Log",
-                    "Exp",
-                    "Sqrt",
-                    "Pi",
-                    "E",
-                    "True",
-                    "False",
-                }
-                vars_found = [
-                    v
-                    for v in set(var_matches)
-                    if v not in excluded and not v.islower() or len(v) == 1
-                ]
-                if vars_found:
-                    variables = (
-                        vars_found[0]
-                        if len(vars_found) == 1
-                        else "{" + ", ".join(vars_found[:3]) + "}"
-                    )
-                else:
-                    variables = "x"
-
-            # Construct Solve command
-            mathematica_code = f"Solve[{equation}, {variables}]"
-            return await self.execute_mathematica(mathematica_code, False)
-
-        except Exception as e:
-            logger.error(f"Error in solve_equation: {e}")
-            return [TextContent(type="text", text=f"**Error:** {str(e)}")]
-
-    async def calculate_calculus(
-        self, operation: str, expression: str, variable: str, bounds: str = ""
-    ) -> List[TextContent]:
-        """Perform calculus operations."""
-        try:
-            if operation == "derivative":
-                mathematica_code = f"D[{expression}, {variable}]"
-            elif operation == "integral":
-                if bounds:
-                    mathematica_code = f"Integrate[{expression}, {bounds}]"
-                else:
-                    mathematica_code = f"Integrate[{expression}, {variable}]"
-            elif operation == "limit":
-                if bounds:
-                    mathematica_code = f"Limit[{expression}, {bounds}]"
-                else:
-                    mathematica_code = f"Limit[{expression}, {variable} -> 0]"
-            elif operation == "series":
-                if bounds:
-                    mathematica_code = f"Series[{expression}, {bounds}]"
-                else:
-                    mathematica_code = f"Series[{expression}, {{{variable}, 0, 5}}]"
-            else:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"**Error:** Unknown calculus operation: {operation}",
-                    )
-                ]
-
-            return await self.execute_mathematica(mathematica_code, False)
-
-        except Exception as e:
-            logger.error(f"Error in calculate_calculus: {e}")
-            return [TextContent(type="text", text=f"**Error:** {str(e)}")]
-
-    async def plot_function(
-        self, expression: str, variable_range: str, plot_type: str = "Plot"
-    ) -> List[TextContent]:
-        """Create mathematical plots."""
-        try:
-            mathematica_code = f"{plot_type}[{expression}, {variable_range}]"
-            return await self.execute_mathematica(
-                mathematica_code, False
-            )  # Don't format plots as LaTeX
-
-        except Exception as e:
-            logger.error(f"Error in plot_function: {e}")
-            return [TextContent(type="text", text=f"**Error:** {str(e)}")]
 
     async def get_session_info(self) -> List[TextContent]:
         """Get information about the current session."""
@@ -801,6 +637,7 @@ class MathematicaMCPServer:
             f"**Session ID:** {self.session.session_id}",
             f"**Variables:** {len(self.session.variables)}",
             f"**History entries:** {len(self.session.history)}",
+            f"**Temp directory:** {self.session.temp_dir}",
         ]
 
         if self.session.variables:

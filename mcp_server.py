@@ -1,13 +1,11 @@
 """
-Mathematica Model Context Protocol (MCP) Server - Fixed Version
-Includes fixes for empty output issues in Claude Desktop environment
+Mathematica Model Context Protocol (MCP) Server - No TeXForm Version
+Uses OutputForm only, letting Claude handle LaTeX formatting
 """
 
 import asyncio
-import json
 import os
 import re
-import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -175,84 +173,11 @@ class MathematicaValidator:
 
 
 class MathematicaFormatter:
-    """Handles formatting of Mathematica output, including LaTeX conversion."""
+    """Handles formatting of Mathematica output using OutputForm only."""
 
     @staticmethod
-    async def to_latex(expression: str) -> Optional[str]:
-        """Convert Mathematica expression to LaTeX format."""
-        try:
-            # Wrap expression in TeXForm
-            tex_code = f"Print[TeXForm[{expression}]]"
-
-            process = await asyncio.create_subprocess_exec(
-                "wolframscript",
-                "-code",
-                tex_code,
-                "-print",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=10
-                )
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
-                logger.warning("LaTeX conversion timed out.")
-                return None
-
-            if process.returncode == 0:
-                latex_output = stdout.decode("utf-8").strip()
-                # Clean up the LaTeX output
-                latex_output = latex_output.replace("\\text{", "\\mathrm{")
-                # Remove 'Null' and empty lines
-                latex_output = "\n".join(
-                    line
-                    for line in latex_output.splitlines()
-                    if line.strip() and line.strip() != "Null"
-                )
-                return latex_output
-            else:
-                logger.warning(f"LaTeX conversion failed: {stderr.decode('utf-8')}")
-                return None
-
-        except Exception as e:
-            logger.warning(f"LaTeX conversion error: {e}")
-            return None
-
-    @staticmethod
-    def format_result(result: str, latex: Optional[str] = None) -> str:
-        """Format the result for display, optionally including LaTeX."""
-        formatted = f"**Result:**\n{result}"
-
-        if latex and latex.strip():
-            # Clean LaTeX and wrap in display math
-            clean_latex = latex.strip().strip('"')
-            if clean_latex and clean_latex != result:
-                formatted += f"\n\n**LaTeX:**\n$$\n{clean_latex}\n$$"
-
-        return formatted
-
-    @staticmethod
-    def is_graphical_output(code: str) -> bool:
-        """Check if the code is likely to produce graphical output."""
-        graphical_functions = [
-            "Plot",
-            "Plot3D",
-            "ListPlot",
-            "ParametricPlot",
-            "PolarPlot",
-            "ContourPlot",
-            "DensityPlot",
-            "Graphics",
-            "Show",
-            "BarChart",
-            "PieChart",
-            "Histogram",
-        ]
-        return any(func in code for func in graphical_functions)
+    def format_result(result: str) -> str:
+        return f"**Result:**\n{result}"
 
 
 class MathematicaMCPServer:
@@ -263,8 +188,8 @@ class MathematicaMCPServer:
         # Add server info to help Claude understand capabilities
         self.server.server_info = {
             "name": "Mathematica MCP Server",
-            "version": "1.0.1",
-            "description": "Advanced mathematical computation server powered by Wolfram Mathematica. Provides symbolic mathematics, calculus, algebra, statistics, plotting, and numerical analysis capabilities. Use for any mathematical task that goes beyond basic arithmetic.",
+            "version": "1.1.0",
+            "description": "Advanced mathematical computation server powered by Wolfram Mathematica. Provides symbolic mathematics, calculus, algebra, statistics, plotting, and numerical analysis capabilities. Use for any mathematical task that goes beyond basic arithmetic. Outputs in OutputForm for Claude to format.",
             "capabilities": [
                 "Symbolic mathematics and equation solving",
                 "Calculus (derivatives, integrals, limits, series)",
@@ -356,11 +281,6 @@ class MathematicaMCPServer:
                                 "type": "string",
                                 "description": "Mathematica/Wolfram Language code to execute. Examples: 'Solve[x^2 + 2*x + 1 == 0, x]', 'Integrate[x^2, x]', 'Plot[Sin[x], {x, 0, 2*Pi}]', 'Factor[x^4 - 1]'",
                             },
-                            "format_latex": {
-                                "type": "boolean",
-                                "description": "Whether to include LaTeX formatting of mathematical results for better display",
-                                "default": True,
-                            },
                         },
                         "required": ["code"],
                     },
@@ -381,9 +301,7 @@ class MathematicaMCPServer:
             logger.info(f"Tool called: {name} with arguments: {arguments}")
 
             if name == "mathematica_eval":
-                return await self.execute_mathematica(
-                    arguments["code"], arguments.get("format_latex", True)
-                )
+                return await self.execute_mathematica(arguments["code"])
             elif name == "test_wolframscript":
                 return await self.test_wolframscript_direct()
             else:
@@ -452,10 +370,8 @@ class MathematicaMCPServer:
                 )
             ]
 
-    async def execute_mathematica(
-        self, code: str, format_latex: bool = True
-    ) -> List[TextContent]:
-        """Execute Mathematica code with full error handling and formatting."""
+    async def execute_mathematica(self, code: str) -> List[TextContent]:
+        """Execute Mathematica code with OutputForm formatting only."""
         try:
             # Check if wolframscript is available
             wolframscript_ok, error_msg = await self.check_wolframscript()
@@ -472,38 +388,34 @@ class MathematicaMCPServer:
             # Prepare code with session context
             context = self.session.get_context_variables()
 
-            # FIX: Wrap code to ensure output is captured
+            # Wrap code to ensure output is captured in OutputForm
             wrapped_code = f"""
-            (* MCP Server Execution *)
-            {context}
-            result = {code};
-            Print[OutputForm[result]];
-            """
+(* MCP Server Execution *)
+{context}
+result = {code};
+Print[OutputForm[result]];
+"""
 
             logger.info(f"Executing wrapped Mathematica code: {wrapped_code[:200]}...")
 
-            # FIX: Use explicit options for better output control
+            # Use OutputForm explicitly for all outputs
             cmd_args = [
                 "wolframscript",
                 "-code",
                 wrapped_code,
                 "-print",
-                "all",  # Print all outputs
+                "all",
                 "-format",
-                "OutputForm",  # Force text output
+                "OutputForm",
                 "-charset",
-                "UTF8",  # Ensure proper encoding
+                "UTF8",
             ]
 
-            # FIX: Ensure proper environment
             env = os.environ.copy()
-            # Ensure Mathematica path is at the front
             mathematica_path = "/Applications/Mathematica.app/Contents/MacOS"
             current_path = env.get("PATH", "")
             if mathematica_path not in current_path:
                 env["PATH"] = f"{mathematica_path}:{current_path}"
-
-            # Add critical environment variables if not present
             if "HOME" not in env:
                 env["HOME"] = os.path.expanduser("~")
             if "USER" not in env:
@@ -516,7 +428,7 @@ class MathematicaMCPServer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                cwd=self.session.temp_dir,  # Use session temp dir as working directory
+                cwd=self.session.temp_dir,
             )
 
             logger.info(f"Process created with PID: {process.pid}")
@@ -528,8 +440,6 @@ class MathematicaMCPServer:
                 logger.info(f"Process completed with return code: {process.returncode}")
                 logger.info(f"Raw stdout length: {len(stdout)} bytes")
                 logger.info(f"Raw stderr length: {len(stderr)} bytes")
-
-                # Log first 500 chars of output for debugging
                 if stdout:
                     logger.info(
                         f"Stdout preview: {stdout.decode('utf-8', errors='ignore')[:500]}"
@@ -538,7 +448,6 @@ class MathematicaMCPServer:
                     logger.info(
                         f"Stderr preview: {stderr.decode('utf-8', errors='ignore')[:500]}"
                     )
-
             except asyncio.TimeoutError:
                 logger.error("Process timed out")
                 process.kill()
@@ -552,20 +461,15 @@ class MathematicaMCPServer:
 
             if process.returncode == 0:
                 result = stdout.decode("utf-8", errors="ignore").strip()
-
-                # FIX: If still empty, try alternative approach
                 if not result:
                     logger.warning(
                         "Empty result from wolframscript, trying alternative approach"
                     )
-
-                    # Try using a temporary file
                     with tempfile.NamedTemporaryFile(
                         mode="w", suffix=".m", delete=False
                     ) as f:
                         f.write(f"{context}\n{code}\n")
                         temp_file = f.name
-
                     try:
                         alt_process = await asyncio.create_subprocess_exec(
                             "wolframscript",
@@ -579,16 +483,13 @@ class MathematicaMCPServer:
                         )
                         alt_stdout, alt_stderr = await alt_process.communicate()
                         result = alt_stdout.decode("utf-8", errors="ignore").strip()
-
                         if not result:
                             logger.error(
                                 f"Still empty. Alt stderr: {alt_stderr.decode('utf-8', errors='ignore')}"
                             )
                     finally:
                         os.unlink(temp_file)
-
                 if not result:
-                    # Provide diagnostic information
                     stderr_content = stderr.decode("utf-8", errors="ignore")
                     return [
                         TextContent(
@@ -599,39 +500,16 @@ class MathematicaMCPServer:
                             f"Try using the test_wolframscript tool to diagnose the issue.",
                         )
                     ]
-
-                # Sanitize output
                 result = MathematicaValidator.sanitize_output(result)
                 logger.info(f"Sanitized Mathematica output: '{result}'")
-
-                # Update session
                 self.session.update_variables(code, result)
                 self.session.add_to_history(code, result)
-
-                # Format result
-                latex_result = None
-                if format_latex and not MathematicaFormatter.is_graphical_output(code):
-                    # Try to get LaTeX format for the original expression, not the result
-                    if (
-                        result
-                        and not result.startswith("Graphics")
-                        and len(result) < 1000
-                    ):
-                        # Use the result for LaTeX conversion, not the code
-                        latex_result = await MathematicaFormatter.to_latex(result)
-
-                formatted_output = MathematicaFormatter.format_result(
-                    result, latex_result
-                )
-
+                formatted_output = MathematicaFormatter.format_result(result)
                 return [TextContent(type="text", text=formatted_output)]
-
             else:
                 error = stderr.decode("utf-8", errors="ignore").strip()
                 error = MathematicaValidator.sanitize_output(error)
-
                 return [TextContent(type="text", text=f"**Execution Error:**\n{error}")]
-
         except Exception as e:
             logger.error(f"Unexpected error in execute_mathematica: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")

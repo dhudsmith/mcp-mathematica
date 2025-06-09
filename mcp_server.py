@@ -182,7 +182,7 @@ class MathematicaFormatter:
         """Convert Mathematica expression to LaTeX format."""
         try:
             # Wrap expression in TeXForm
-            tex_code = f"TeXForm[{expression}]"
+            tex_code = f"Print[TeXForm[{expression}]]"
 
             process = await asyncio.create_subprocess_exec(
                 "wolframscript",
@@ -207,6 +207,12 @@ class MathematicaFormatter:
                 latex_output = stdout.decode("utf-8").strip()
                 # Clean up the LaTeX output
                 latex_output = latex_output.replace("\\text{", "\\mathrm{")
+                # Remove 'Null' and empty lines
+                latex_output = "\n".join(
+                    line
+                    for line in latex_output.splitlines()
+                    if line.strip() and line.strip() != "Null"
+                )
                 return latex_output
             else:
                 logger.warning(f"LaTeX conversion failed: {stderr.decode('utf-8')}")
@@ -432,7 +438,7 @@ class MathematicaMCPServer:
                 result += f"Test 3 - MathKernel: Not found at {kernel_path}\n"
 
             # Test 4: Environment info
-            result += f"\nEnvironment:\n"
+            result += "\nEnvironment:\n"
             result += f"PATH: {os.environ.get('PATH', 'NOT SET')}\n"
             result += f"HOME: {os.environ.get('HOME', 'NOT SET')}\n"
             result += f"CWD: {os.getcwd()}\n"
@@ -468,12 +474,11 @@ class MathematicaMCPServer:
 
             # FIX: Wrap code to ensure output is captured
             wrapped_code = f"""
-(* MCP Server Execution *)
-{context}
-result = {code};
-Print[OutputForm[result]];
-result
-"""
+            (* MCP Server Execution *)
+            {context}
+            result = {code};
+            Print[OutputForm[result]];
+            """
 
             logger.info(f"Executing wrapped Mathematica code: {wrapped_code[:200]}...")
 
@@ -606,12 +611,13 @@ result
                 # Format result
                 latex_result = None
                 if format_latex and not MathematicaFormatter.is_graphical_output(code):
-                    # Try to get LaTeX format for mathematical expressions
+                    # Try to get LaTeX format for the original expression, not the result
                     if (
                         result
                         and not result.startswith("Graphics")
                         and len(result) < 1000
                     ):
+                        # Use the result for LaTeX conversion, not the code
                         latex_result = await MathematicaFormatter.to_latex(result)
 
                 formatted_output = MathematicaFormatter.format_result(

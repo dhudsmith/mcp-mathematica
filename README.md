@@ -1,6 +1,6 @@
 # Mathematica MCP Server
 
-This project provides an MCP (Model Context Protocol) server for Mathematica, enabling safe, session-based Mathematica code execution and LaTeX formatting for use with Claude or other MCP-compatible clients.
+This project provides an MCP (Model Context Protocol) server for Mathematica, enabling safe, session-based Mathematica code execution for use with Claude or other MCP-compatible clients.
 
 ---
 
@@ -8,7 +8,6 @@ This project provides an MCP (Model Context Protocol) server for Mathematica, en
 
 - **Session Management:** Persistent Mathematica sessions with variable tracking and history.
 - **Secure Execution:** Code validation to block dangerous Mathematica functions.
-- **LaTeX Formatting:** Automatic conversion of results to LaTeX when possible.
 - **MCP Integration:** Compatible with Claude's MCP tool interface.
 
 ---
@@ -81,7 +80,6 @@ The test script checks:
 - Server import and class presence
 - Code validation (security)
 - Basic Mathematica execution
-- LaTeX formatting
 - Session management
 - Server startup
 

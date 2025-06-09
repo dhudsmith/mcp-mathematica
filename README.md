@@ -1,14 +1,16 @@
 # Mathematica MCP Server
 
-This project provides an MCP (Model Context Protocol) server for Mathematica, enabling safe, session-based Mathematica code execution for use with Claude or other MCP-compatible clients.
+This project provides an MCP (Model Context Protocol) server for Mathematica, enabling safe, session-based Mathematica code execution for use with Claude Desktop or other MCP-compatible clients.
 
 ---
 
 ## Features
 
 - **Session Management:** Persistent Mathematica sessions with variable tracking and history.
-- **Secure Execution:** Code validation to block dangerous Mathematica functions.
+- **Secure Execution:** Code validation to block dangerous Mathematica functions and suspicious patterns.
 - **MCP Integration:** Compatible with Claude's MCP tool interface.
+- **OutputForm Only:** All results are returned in Mathematica's OutputForm (not TeXForm); Claude handles LaTeX formatting if needed.
+- **Diagnostics Tool:** Includes a `test_wolframscript` tool for troubleshooting server/Mathematica connectivity.
 
 ---
 
@@ -29,7 +31,7 @@ This project provides an MCP (Model Context Protocol) server for Mathematica, en
    ```
 
 4. **Install Mathematica**  
-   Ensure Mathematica is installed and `wolframscript` is available in your system PATH.
+   Ensure Mathematica is installed and `wolframscript` is available in your system PATH. The server will attempt to add `/Applications/Mathematica.app/Contents/MacOS` to your PATH automatically on macOS.
 
 ---
 
@@ -47,21 +49,70 @@ Or, if using the conda environment:
 conda run -n mathematica-mcp python mcp_server.py
 ```
 
-### Integration with Claude MCP
+---
 
-Configure Claude to use this server by adding the following to your Claude config (already present in your setup):
+## Integration with Claude Desktop
 
-```json
-{
-  "mcpServers": {
-    "mathematica": {
-      "command": "conda",
-      "args": ["run", "-n", "mathematica-mcp", "python", "/Users/dane2/code/wolfram_mcp/mcp_server.py"]
-    }
-  }
-}
-```
-See [`/Users/dane2/Library/Application Support/Claude/claude_desktop_config.json`](../Library/Application%20Support/Claude/claude_desktop_config.json).
+To use this server with Claude Desktop's MCP tool interface:
+
+1. **Locate your Claude Desktop config file:**  
+   Usually at:
+   ```
+   ~/Library/Application Support/Claude/claude_desktop_config.json
+   ```
+
+2. **Add or update the Mathematica MCP server entry as follows:**
+   ```json
+   {
+     "mcpServers": {
+       "mathematica": {
+         "command": "/path/to/your/conda/env/bin/python",
+         "args": ["/path/to/your/wolfram_mcp/mcp_server.py"],
+         "env": {
+           "MATHEMATICA_TOOL_PREFERENCE": "high",
+           "MATHEMATICAL_COMPUTATION_MODE": "advanced",
+           "PATH": "/path/to/Mathematica.app/Contents/MacOS:/path/to/your/conda/env/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+           "HOME": "/your/username",
+           "USER": "your_username",
+           "WOLFRAM_KERNEL": "/path/to/Mathematica.app/Contents/MacOS/MathKernel",
+           "MATHEMATICA_HOME": "/path/to/Mathematica.app/Contents",
+           "WOLFRAM_SCRIPT_MODE": "batch",
+           "PYTHONUNBUFFERED": "1",
+           "WOLFRAM_CONTEXT": "mcp_server"
+         }
+       }
+     },
+     "globalSettings": {
+       "toolUsage": {
+         "mathematicalQueries": {
+           "preferredTools": ["mathematica"],
+           "triggerKeywords": [
+             "solve", "integrate", "derivative", "differential", "equation",
+             "calculus", "algebra", "plot", "graph", "mathematical", "computation",
+             "symbolic", "factor", "expand", "simplify", "matrix", "determinant",
+             "eigenvalue", "statistics", "probability", "optimization", "limit",
+             "series", "taylor", "fourier", "laplace", "transform"
+           ]
+         }
+       }
+     }
+   }
+   ```
+   **Note:** All local paths (such as the Python executable, MCP server script, Mathematica installation, and user-specific directories) must be updated to match your own system. Replace `/path/to/your/conda/env`, `/path/to/your/wolfram_mcp`, `/path/to/Mathematica.app`, `/your/username`, and `your_username` with the appropriate values for your setup.
+
+3. **Restart Claude Desktop** to pick up the new MCP server configuration.
+
+Claude will now use this Mathematica MCP server for mathematical queries and code execution, with the specified environment and tool preferences.
+
+---
+
+## Available MCP Tools
+
+- **mathematica_eval**:  
+  Execute Mathematica/Wolfram Language code for mathematical computations, symbolic math, calculus, algebra, differential equations, statistics, plotting, and numerical analysis. Use this for any advanced mathematical task.
+
+- **test_wolframscript**:  
+  Diagnostic tool to check if `wolframscript` is working correctly. Use this if you encounter issues with code execution or server startup.
 
 ---
 
@@ -97,6 +148,8 @@ The test script checks:
 
 - The server requires Mathematica and `wolframscript` to be installed and accessible.
 - The MCP Python package is installed via pip in the conda environment.
-- For custom Mathematica paths, edit the environment variables in `env.yaml`.
+- For custom Mathematica paths, edit the environment variables in `env.yaml` or ensure your PATH is set correctly.
+- All output is returned in OutputForm (plain text); Claude will handle any further formatting or LaTeX conversion.
+- Use the `test_wolframscript` tool for troubleshooting if you encounter issues with Mathematica connectivity.
 
 ---

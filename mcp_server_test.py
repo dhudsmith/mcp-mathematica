@@ -5,11 +5,9 @@ Tests all major functionality including validation, execution, and session manag
 """
 
 import asyncio
-import json
-import subprocess
 import sys
-import tempfile
 import time
+import importlib.util
 from pathlib import Path
 from typing import Dict, List, Any
 
@@ -78,7 +76,7 @@ class MathematicaServerTester:
                     return TestResult(
                         "Prerequisites",
                         False,
-                        "wolframscript not working properly",
+                        f"wolframscript error: {stderr.decode('utf-8')}",
                         time.time() - start_time,
                     )
 
@@ -94,9 +92,22 @@ class MathematicaServerTester:
 
             # Check Python imports
             try:
-                import mcp
-                from mcp.server import Server
-                from mcp.types import Tool, TextContent
+                import importlib.util
+
+                if importlib.util.find_spec("mcp.server") is None:
+                    return TestResult(
+                        "Prerequisites",
+                        False,
+                        "mcp.server not found",
+                        time.time() - start_time,
+                    )
+                if importlib.util.find_spec("mcp.types") is None:
+                    return TestResult(
+                        "Prerequisites",
+                        False,
+                        "mcp.types not found",
+                        time.time() - start_time,
+                    )
             except ImportError as e:
                 return TestResult(
                     "Prerequisites",
@@ -130,10 +141,8 @@ class MathematicaServerTester:
             sys.path.insert(0, str(server_dir))
 
             # Try to import the main classes
-            import importlib.util
-
             spec = importlib.util.spec_from_file_location(
-                "mathematica_server", self.server_script_path
+                "mcp_server", self.server_script_path
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -150,7 +159,7 @@ class MathematicaServerTester:
                     return TestResult(
                         "Server Import",
                         False,
-                        f"Missing required class: {class_name}",
+                        f"Missing class: {class_name}",
                         time.time() - start_time,
                     )
 
@@ -179,15 +188,13 @@ class MathematicaServerTester:
             server_dir = self.server_script_path.parent
             sys.path.insert(0, str(server_dir))
 
-            import importlib.util
-
             spec = importlib.util.spec_from_file_location(
-                "mathematica_server", self.server_script_path
+                "mcp_server", self.server_script_path
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
 
-            validator = module.MathematicaValidator()
+            validator = module.MathematicaValidator
 
             # Test valid code
             valid_code = "x = 5; y = x^2; Solve[y == 25, x]"
@@ -213,7 +220,7 @@ class MathematicaServerTester:
                     return TestResult(
                         "Validation System",
                         False,
-                        f"Dangerous code not caught: {dangerous_code}",
+                        f"Dangerous code not blocked: {dangerous_code}",
                         time.time() - start_time,
                     )
 
@@ -265,7 +272,7 @@ class MathematicaServerTester:
                     return TestResult(
                         "Basic Execution",
                         False,
-                        f"Timeout executing: {code}",
+                        f"Timeout for code: {code}",
                         time.time() - start_time,
                     )
 
@@ -273,7 +280,7 @@ class MathematicaServerTester:
                     return TestResult(
                         "Basic Execution",
                         False,
-                        f"Failed to execute: {code}. Error: {stderr.decode('utf-8')}",
+                        f"wolframscript error: {stderr.decode('utf-8')}",
                         time.time() - start_time,
                     )
 
@@ -283,7 +290,7 @@ class MathematicaServerTester:
                         return TestResult(
                             "Basic Execution",
                             False,
-                            f"Unexpected result for {code}: got '{result}', expected one of {expected_pattern}",
+                            f"Expected one of {expected_pattern}, got '{result}'",
                             time.time() - start_time,
                         )
                 else:
@@ -291,7 +298,7 @@ class MathematicaServerTester:
                         return TestResult(
                             "Basic Execution",
                             False,
-                            f"Unexpected result for {code}: got '{result}', expected pattern '{expected_pattern}'",
+                            f"Expected '{expected_pattern}', got '{result}'",
                             time.time() - start_time,
                         )
 
@@ -336,7 +343,7 @@ class MathematicaServerTester:
                 return TestResult(
                     "LaTeX Formatting",
                     False,
-                    f"Timeout during LaTeX conversion",
+                    "Timeout during LaTeX conversion",
                     time.time() - start_time,
                 )
 
@@ -383,10 +390,8 @@ class MathematicaServerTester:
             server_dir = self.server_script_path.parent
             sys.path.insert(0, str(server_dir))
 
-            import importlib.util
-
             spec = importlib.util.spec_from_file_location(
-                "mathematica_server", self.server_script_path
+                "mcp_server", self.server_script_path
             )
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -473,7 +478,7 @@ class MathematicaServerTester:
                 return TestResult(
                     "Server Startup",
                     False,
-                    f"Server terminated immediately. Stderr: {stderr.decode('utf-8')[:200]}",
+                    f"Server terminated early. Stderr: {stderr.decode('utf-8')}",
                     time.time() - start_time,
                 )
 
@@ -482,7 +487,6 @@ class MathematicaServerTester:
             await asyncio.sleep(1)
 
             if self.server_process.returncode is None:
-                # Force kill if still running
                 self.server_process.kill()
                 await self.server_process.wait()
 
@@ -526,25 +530,13 @@ class MathematicaServerTester:
             try:
                 result = await test_func()
                 self.results.append(result)
-
                 if result.passed:
-                    self.print_status(
-                        f"✓ {test_name}: {result.message} ({result.execution_time:.2f}s)",
-                        "PASS",
-                    )
+                    self.print_status(f"{test_name} PASSED: {result.message}", "PASS")
                     passed_tests += 1
                 else:
-                    self.print_status(
-                        f"✗ {test_name}: {result.message} ({result.execution_time:.2f}s)",
-                        "FAIL",
-                    )
-
+                    self.print_status(f"{test_name} FAILED: {result.message}", "FAIL")
             except Exception as e:
-                error_result = TestResult(
-                    test_name, False, f"Test framework error: {e}"
-                )
-                self.results.append(error_result)
-                self.print_status(f"✗ {test_name}: {error_result.message}", "FAIL")
+                self.print_status(f"{test_name} EXCEPTION: {e}", "FAIL")
 
         # Summary
         self.print_status("=" * 50, "INFO")
@@ -558,7 +550,7 @@ class MathematicaServerTester:
         if failed_tests:
             self.print_status("\nFailed Tests:", "FAIL")
             for result in failed_tests:
-                self.print_status(f"  • {result.name}: {result.message}", "FAIL")
+                self.print_status(f"{result.name}: {result.message}", "FAIL")
 
         return {
             "total_tests": total_tests,

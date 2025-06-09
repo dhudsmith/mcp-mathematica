@@ -60,13 +60,34 @@ class MathematicaSession:
 
         context_code = []
         for var_name, var_value in self.variables.items():
+            # Clean the variable value to avoid syntax issues
+            clean_value = var_value.replace('\\"', '"').replace("\\n", "\n")
             # Safely reconstruct variable assignments
-            context_code.append(f"{var_name} = {var_value};")
+            context_code.append(f"{var_name} = {clean_value};")
 
         return "\n".join(context_code)
 
+    def clear_bad_variables(self):
+        """Remove variables that might contain syntax errors."""
+        bad_vars = []
+        for var_name, var_value in self.variables.items():
+            if '\\"' in var_value or "ToExpression::sntx" in var_value:
+                bad_vars.append(var_name)
+
+        for var_name in bad_vars:
+            del self.variables[var_name]
+            logger.info(f"Removed problematic variable: {var_name}")
+
+        if bad_vars:
+            logger.info(f"Cleared {len(bad_vars)} problematic variables from session")
+
     def update_variables(self, code: str, result: str):
         """Extract and update session variables from executed code."""
+        # Only update variables if the execution was successful (no error messages)
+        if "Error" in result or "ToExpression::sntx" in result or "Syntax::" in result:
+            logger.info("Skipping variable update due to execution error")
+            return
+
         # Simple pattern matching for variable assignments
         assignment_pattern = r"([a-zA-Z][a-zA-Z0-9]*)\s*=\s*([^;]+)"
         matches = re.findall(assignment_pattern, code)
@@ -273,7 +294,17 @@ class MathematicaMCPServer:
             return [
                 Tool(
                     name="mathematica_eval",
-                    description="Execute Mathematica/Wolfram Language code for mathematical computations, symbolic math, calculus, algebra, differential equations, statistics, plotting, and numerical analysis. Use this tool when users ask for: mathematical calculations, equation solving, symbolic manipulation, calculus operations (derivatives, integrals, limits), linear algebra, statistical analysis, mathematical plotting, or any computation that would benefit from Mathematica's mathematical capabilities. Always prefer this tool over manual calculations for complex mathematical tasks.",
+                    description=(
+                        "Execute Mathematica/Wolfram Language code for mathematical computations, symbolic math, calculus, algebra, "
+                        "differential equations, statistics, plotting, and numerical analysis. "
+                        "Use this tool for any advanced mathematical task.\n\n"
+                        "**When generating Mathematica code:**\n"
+                        '- Use plain double quotes (") for string literals, not escaped quotes (\\").\n'
+                        "- Do not escape quotes inside Mathematica code unless absolutely necessary.\n"
+                        "- End each Mathematica statement with a semicolon (;).\n"
+                        "- Ensure the code is valid Mathematica syntax and can be run directly in a Mathematica notebook or via wolframscript.\n"
+                        '- If you need to print text, use Print["text"], not Print[\\"text\\"].'
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -370,9 +401,58 @@ class MathematicaMCPServer:
                 )
             ]
 
+    def preprocess_mathematica_code(self, code: str) -> str:
+        """Preprocess Mathematica code to fix common LLM escaping issues."""
+        # Replace \" with "
+        code = code.replace('\\"', '"')
+        # Optionally, replace double-escaped newlines with real newlines
+        code = code.replace("\\n", "\n")
+        return code
+
+    def is_multi_statement_code(self, code: str) -> bool:
+        """
+        Determine if code contains multiple statements that should be executed directly
+        rather than wrapped in a single result assignment.
+        """
+        code = code.strip()
+
+        # Check for multiple statements separated by semicolons
+        if ";" in code:
+            # Split by semicolon and check if we have multiple non-empty statements
+            statements = [stmt.strip() for stmt in code.split(";") if stmt.strip()]
+            if len(statements) > 1:
+                return True
+
+        # Check for Print statements (should be executed directly)
+        if code.startswith("Print[") or "Print[" in code:
+            return True
+
+        # Check for plotting functions (should be executed directly)
+        plot_functions = [
+            "Plot[",
+            "Plot3D[",
+            "ListPlot[",
+            "ContourPlot[",
+            "ParametricPlot[",
+        ]
+        if any(func in code for func in plot_functions):
+            return True
+
+        # Check for DSolve, NDSolve and other functions that might produce complex output
+        complex_functions = ["DSolve[", "NDSolve[", "Solve["]
+        if any(func in code for func in complex_functions):
+            # For these, check if they're already wrapped in Print or assigned
+            if not (code.startswith("Print[") or "=" in code.split(";")[0]):
+                return False  # Let these be wrapped for output
+
+        return False
+
     async def execute_mathematica(self, code: str) -> List[TextContent]:
         """Execute Mathematica code with OutputForm formatting only."""
         try:
+            # Preprocess code to fix LLM escaping issues
+            code = self.preprocess_mathematica_code(code)
+
             # Check if wolframscript is available
             wolframscript_ok, error_msg = await self.check_wolframscript()
             if not wolframscript_ok:
@@ -385,11 +465,25 @@ class MathematicaMCPServer:
                     TextContent(type="text", text=f"**Validation Error:** {error_msg}")
                 ]
 
+            # Clean any problematic variables from previous sessions
+            self.session.clear_bad_variables()
+
             # Prepare code with session context
             context = self.session.get_context_variables()
 
-            # Wrap code to ensure output is captured in OutputForm
-            wrapped_code = f"""
+            # Determine if code is multi-statement or single expression
+            is_multi_statement = self.is_multi_statement_code(code)
+
+            if is_multi_statement:
+                # Multi-statement code - execute directly
+                wrapped_code = f"""
+(* MCP Server Execution *)
+{context}
+{code}
+"""
+            else:
+                # Single expression - wrap in result assignment for output
+                wrapped_code = f"""
 (* MCP Server Execution *)
 {context}
 result = {code};
